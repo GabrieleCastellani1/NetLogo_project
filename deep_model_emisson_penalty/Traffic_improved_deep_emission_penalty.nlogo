@@ -1,5 +1,5 @@
 ; Two pager: info part of this file
-; FInal report: short description from/like info part of this file and results from simulaitons varying hyperparameters
+; Final report: short description from/like info part of this file and results from simulaitons varying hyperparameters
 
 extensions [ py ]
 
@@ -8,8 +8,14 @@ globals [
   speed-min
   inputs
   loss
+  alpha-base     ; Base emission coefficient (speed term)
+  beta-accel     ; Acceleration penalty coefficient
+  gamma-ineff    ; Inefficiency coefficient
+  optimal-speed  ; Speed with minimal emissions (as fraction of speed-limit)
   total-emissions    ; New global for tracking total emissions
   current-tick-emissions  ; New global for emissions per tick
+  emission-penalty
+  max-ticks
 ]
 
 turtles-own [
@@ -40,6 +46,13 @@ end
 to setup
   clear-all
 
+  set alpha-base 0.15    ; Base emissions per unit speed
+  set beta-accel 0.3     ; Acceleration penalty multiplier
+  set gamma-ineff 0.1    ; Speed deviation penalty
+  set optimal-speed 0.7  ; Optimal speed (70% of speed-limit)
+  set max-ticks 5000  ; Set your desired tick limit here
+  set emission-penalty 0.4 ; set emission penalty to be vconsidered in the reward
+
   set inputs (list
     [-> speed]
     [-> distance next-car]
@@ -63,7 +76,8 @@ to setup
   (py:run
     "model = Sequential()"
     "model.add(Dense(hl_size, input_shape=(state_dims,), activation='relu'))"
-    "model.add(Dense(hl_size, activation='relu'))"
+    "model.add(Dense(64, activation='relu'))"
+    "model.add(Dense(64, activation='relu'))"
     "model.add(Dense(hl_size, activation='relu'))"
     "model.add(Dense(num_actions))"
     "optimizer = Adam(learning_rate=lr)"
@@ -209,12 +223,13 @@ to go
     if speed > speed-limit [ set speed speed-limit ]
 
     fd speed
-    set reward (log (speed + 1e-8) 2) ; Original reward unchanged the goal is to maintain higher speeds while avoiding collisions
 
     ; Calculate and update emissions without affecting reward
     set emission-rate calculate-emissions
     set current-tick-emissions current-tick-emissions + emission-rate
     set total-emissions total-emissions + emission-rate
+
+    set reward (log (speed + 1e-8) 2) - (emission-penalty * emission-rate * [emission-multiplier] of self)
   ]
 
   if train? [
@@ -222,7 +237,12 @@ to go
     train
   ]
 
-  tick
+  ; Stop condition:
+  if ticks >= max-ticks [
+    stop  ; Halts the simulation
+  ]
+
+  tick  ; Increment the tick counter
 end
 
 to select-actions
@@ -301,12 +321,22 @@ to decelerate
   set speed speed - deceleration * deceleration-multiplier
 end
 
-to-report calculate-emissions  ; New reporter to calculate emissions for a car
-  let acc abs (speed - prev-speed)  ; Calculate acceleration magnitude
-  let base-emission speed * 0.1       ; Base emission proportional to speed
-  let accel-emission acc * 0.2        ; Additional emission from acceleration/deceleration
-  let speed-inefficiency 0.1 * (1 + (speed - 0.5) ^ 2)  ; Higher emissions at very low and very high speeds
-  report (base-emission + accel-emission + speed-inefficiency) * emission-multiplier
+to-report calculate-emissions
+  ; Calculate acceleration magnitude (proxy for m/s²)
+  let delta-speed (speed - prev-speed)
+  let acc-squared (delta-speed * delta-speed)  ; Squared term for nonlinear effects
+
+  ; Convert optimal speed to absolute value
+  let optimal-speed-abs (optimal-speed * speed-limit)
+
+  ; Compute components
+  let base (alpha-base * speed)
+  let accel-penalty (beta-accel * acc-squared)
+  let speed-dev (gamma-ineff * ((speed - optimal-speed-abs) ^ 2))
+
+  ; Total emissions with vehicle multiplier
+  let total (base + accel-penalty + speed-dev) * emission-multiplier
+  report total
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -379,7 +409,7 @@ number-of-cars
 number-of-cars
 1
 41
-11.0
+25.0
 1
 1
 NIL
@@ -424,14 +454,13 @@ Car speeds
 time
 speed
 0.0
-300.0
+5000.0
 0.0
-1.0
-true
+5.0
+false
 false
 "" ""
 PENS
-"sample car" 1.0 0 -2674135 true "" "plot [speed] of sample-car"
 "min speed" 1.0 0 -13345367 true "" "plot min [speed] of turtles"
 "max speed" 1.0 0 -10899396 true "" "plot max [speed] of turtles"
 
@@ -491,10 +520,10 @@ selected-actions
 NIL
 NIL
 0.0
-300.0
+5000.0
 0.0
 20.0
-true
+false
 false
 "set-plot-y-range 0 number-of-cars" ""
 PENS
@@ -567,7 +596,7 @@ learning-rate
 learning-rate
 0
 0.01
-0.001
+0.0035
 0.0001
 1
 NIL
@@ -663,10 +692,10 @@ Emissions Over Time
 Time(ticks)
 Emissions
 0.0
-1.0
+5000.0
 0.0
-1.0
-true
+5.0
+false
 false
 "" ""
 PENS

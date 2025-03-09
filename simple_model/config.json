@@ -1,0 +1,80 @@
+{
+  "model_configuration": {
+    "hyperparameters": {
+      "learning_rate": 0.001,
+      "discount_factor": 0.95,
+      "exploration_initial_rate": 0.3,
+      "exploration_decay_rate": 0.005,
+      "target_network_update_freq": 1000,
+      "memory_size": 10000,
+      "batch_size": 32
+    },
+    "network_architecture": {
+      "hidden_layers": [
+        {"units": 36, "activation": "relu"},
+        {"units": 36, "activation": "relu"},
+        {"units": 36, "activation": "relu"}
+      ],
+      "output_activation": "linear",
+      "input_shape": "state_dims",
+      "optimizer": "Adam"
+    }
+  },
+  "training_configuration": {
+    "training_frequency": 1,
+    "reward_function": "log2(speed + 1e-8)",
+    "state_components": [
+      "speed",
+      "distance_to_next_car",
+      "next_car_speed",
+      "exploration_rate (if enabled)",
+      "ticks (if enabled)"
+    ],
+    "action_space": [
+      "decelerate",
+      "maintain_speed",
+      "accelerate"
+    ]
+  },
+  "environment_settings": {
+    "number_of_cars": 50,
+    "lanes": 3,
+    "speed_limit": 1.0,
+    "acceleration_rate": 0.02,
+    "deceleration_rate": 0.03,
+    "car_types": {
+      "sedan": {
+        "acceleration_multiplier": 1.0,
+        "deceleration_multiplier": 1.0,
+        "emission_multiplier": 1.0
+      },
+      "truck": {
+        "acceleration_multiplier": 0.8,
+        "deceleration_multiplier": 1.2,
+        "emission_multiplier": 1.5
+      },
+      "sports_car": {
+        "acceleration_multiplier": 1.5,
+        "deceleration_multiplier": 0.9,
+        "emission_multiplier": 2.5
+      }
+    }
+  },
+  "simulation_parameters": {
+    "max_ticks": 5000,
+    "emission_calculation": {
+      "alpha_base": 0.15,
+      "beta_accel": 0.3,
+      "gamma_ineff": 0.1,
+      "optimal_speed_ratio": 0.7
+    },
+    "lane_change_buffer": 5
+  },
+  "versioning": {
+    "tensorflow_version": "1.13.1",
+    "keras_version": "2.14.0",
+    "netlogo_version": "6.3.0",
+    "python_version": "3.9.18"
+  },
+  "description": "Configuration for RL-based traffic simulation with emissions tracking. Hyperparameters control exploration-exploitation tradeoff and Q-learning updates. Environment settings match NetLogo's 3-lane highway implementation."
+}

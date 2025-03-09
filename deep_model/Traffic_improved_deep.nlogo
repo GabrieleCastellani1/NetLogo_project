@@ -1,3 +1,6 @@
+; Two pager: info part of this file
+; Final report: short description from/like info part of this file and results from simulaitons varying hyperparameters
+
 extensions [ py ]
 
 globals [
@@ -5,8 +8,13 @@ globals [
   speed-min
   inputs
   loss
+  alpha-base     ; Base emission coefficient (speed term)
+  beta-accel     ; Acceleration penalty coefficient
+  gamma-ineff    ; Inefficiency coefficient
+  optimal-speed  ; Speed with minimal emissions (as fraction of speed-limit)
   total-emissions    ; New global for tracking total emissions
   current-tick-emissions  ; New global for emissions per tick
+  max-ticks
 ]
 
 turtles-own [
@@ -37,14 +45,20 @@ end
 to setup
   clear-all
 
+  set alpha-base 0.15    ; Base emissions per unit speed
+  set beta-accel 0.3     ; Acceleration penalty multiplier
+  set gamma-ineff 0.1    ; Speed deviation penalty
+  set optimal-speed 0.7  ; Optimal speed (70% of speed-limit)
+  set max-ticks 5000  ; Set your desired tick limit here
+
   set inputs (list
     [-> speed]
     [-> distance next-car]
     [-> [speed] of next-car]
   )
 
-  if fp-exp? [
-    set inputs lput [-> exp-rate ] inputs
+  if fp-exp? [ ; Helps agents adapt as exploration decreases over time
+    set inputs lput [-> exp-rate ] inputs ; Models time-dependent traffic patterns (e.g., rush hour)
   ]
   if fp-ticks? [
     set inputs lput [-> ticks] inputs
@@ -60,7 +74,8 @@ to setup
   (py:run
     "model = Sequential()"
     "model.add(Dense(hl_size, input_shape=(state_dims,), activation='relu'))"
-    "model.add(Dense(hl_size, activation='relu'))"
+    "model.add(Dense(64, activation='relu'))"
+    "model.add(Dense(64, activation='relu'))"
     "model.add(Dense(hl_size, activation='relu'))"
     "model.add(Dense(num_actions))"
     "optimizer = Adam(learning_rate=lr)"
@@ -85,7 +100,54 @@ to setup
 end
 
 to setup-road ;; patch procedure
-  if pycor < 2 and pycor > -2 [ set pcolor white ]
+  if pycor = 0 [ set pcolor white ] ;; Lane 1
+  if pycor = 3 [ set pcolor white ] ;; Lane 2
+  if pycor = -3 [ set pcolor white ] ;; Lane 3
+end
+
+to check-lane-change ;; turtle procedure
+  let current-lane [pycor] of patch-here ;; Determine current lane based on patch position
+
+  ;; Define buffer distance for safe lane change (10 units ahead/behind)
+  let buffer 5
+
+  ;; Try to change to the lane above first
+  let target-lane-above current-lane + 3
+  ;; Check if target lane exists within world bounds
+  if (target-lane-above <= max-pycor) [
+    ;; Get all cars in the target lane
+    let target-patches patches with [pycor = target-lane-above]
+    let cars-in-target turtles-on target-patches
+    ;; Check for cars within buffer zone
+    let cars-in-buffer cars-in-target with [
+      (xcor >= ([xcor] of myself - buffer)) and
+      (xcor <= ([xcor] of myself + buffer))
+    ]
+    ;; If no cars in buffer, change lane and accelerate
+    if not any? cars-in-buffer [
+      set ycor target-lane-above
+      set heading 90
+      accelerate
+      stop ;; Exit after successful lane change
+    ]
+  ]
+
+  ;; Try to change to the lane below if above failed
+  let target-lane-below current-lane - 3
+  if (target-lane-below >= min-pycor) [
+    let target-patches patches with [pycor = target-lane-below]
+    let cars-in-target turtles-on target-patches
+    let cars-in-buffer cars-in-target with [
+      (xcor >= ([xcor] of myself - buffer)) and
+      (xcor <= ([xcor] of myself + buffer))
+    ]
+    if not any? cars-in-buffer [
+      set ycor target-lane-below
+      set heading 90
+      accelerate
+      stop
+    ]
+  ]
 end
 
 to setup-cars
@@ -135,24 +197,31 @@ to separate-cars ;; turtle procedure
 end
 
 to go
-  set current-tick-emissions 0  ; Reset current tick emissions
+  set current-tick-emissions 0 ; Reset current tick emissions
 
   py:set "discount" discount
   select-actions
 
   ask turtles [
-    set prev-speed speed  ; Store current speed before it changes
+    set prev-speed speed ; Store current speed before it changes
 
     if action = 0 [ decelerate set color red ]
     if action = 1 [ set color yellow ]
-    if action = 2 [ accelerate set color green]
+    if action = 2 [ accelerate set color green ]
 
-    if distance next-car < 1 + speed [ slow-down-car next-car ]
+    ;; Check if it's safe to change lanes before deciding to slow down
+    ;; Attempt lane change before slowing down
+    if distance next-car < 1 + speed [
+      check-lane-change ;; New logic here
+      ;; If lane change failed, slow down
+      if distance next-car < 1 + speed [ slow-down-car next-car ]
+    ]
+
     if speed < speed-min [ set speed speed-min ]
     if speed > speed-limit [ set speed speed-limit ]
 
     fd speed
-    set reward (log (speed + 1e-8) 2)  ; Original reward unchanged
+    set reward (log (speed + 1e-8) 2) ; Original reward unchanged the goal is to maintain higher speeds while avoiding collisions
 
     ; Calculate and update emissions without affecting reward
     set emission-rate calculate-emissions
@@ -164,13 +233,19 @@ to go
     remember
     train
   ]
-  tick
+
+  ; Stop condition:
+  if ticks >= max-ticks [
+    stop  ; Halts the simulation
+  ]
+
+  tick  ; Increment the tick counter
 end
 
 to select-actions
   ask turtles [ set state map runresult inputs ]
   let turtle-list sort turtles
-  py:set "states" map [ t -> [ state ] of t ] turtle-list
+  py:set "states" map [ t -> [ state ] of t ] turtle-list ; send states to python
   let actions py:runresult "np.argmax(model.predict(np.array(states)), axis = 1)"
 
   (foreach turtle-list actions [ [t a] ->
@@ -184,6 +259,7 @@ to select-actions
   ])
 end
 
+; This implements exploration rate decay to stabilize training
 to-report exp-rate
   report exploration-rate / (1 + exploration-decay-rate * ticks)
 end
@@ -221,9 +297,13 @@ to-report next-car
   while [ not any? turtles-on patch-ahead i ] [
     set i i + 1
   ]
-  report min-one-of turtles-on patch-ahead i [ distance myself ]
+  let car-ahead min-one-of turtles-on patch-ahead i [ distance myself ]
+  ifelse car-ahead != nobody [
+    report car-ahead
+  ] [
+    report self ;; If no car ahead, return self to avoid "nobody" errors
+  ]
 end
-
 
 to slow-down-car [ car-ahead ] ;; turtle procedure
   ;; slow down so you are driving more slowly than the car ahead of you
@@ -238,12 +318,22 @@ to decelerate
   set speed speed - deceleration * deceleration-multiplier
 end
 
-to-report calculate-emissions  ; New reporter to calculate emissions for a car
-  let acc abs (speed - prev-speed)  ; Calculate acceleration magnitude
-  let base-emission speed * 0.1       ; Base emission proportional to speed
-  let accel-emission acc * 0.2        ; Additional emission from acceleration/deceleration
-  let speed-inefficiency 0.1 * (1 + (speed - 0.5) ^ 2)  ; Higher emissions at very low and very high speeds
-  report (base-emission + accel-emission + speed-inefficiency) * emission-multiplier
+to-report calculate-emissions
+  ; Calculate acceleration magnitude (proxy for m/s²)
+  let delta-speed (speed - prev-speed)
+  let acc-squared (delta-speed * delta-speed)  ; Squared term for nonlinear effects
+
+  ; Convert optimal speed to absolute value
+  let optimal-speed-abs (optimal-speed * speed-limit)
+
+  ; Compute components
+  let base (alpha-base * speed)
+  let accel-penalty (beta-accel * acc-squared)
+  let speed-dev (gamma-ineff * ((speed - optimal-speed-abs) ^ 2))
+
+  ; Total emissions with vehicle multiplier
+  let total (base + accel-penalty + speed-dev) * emission-multiplier
+  report total
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -316,7 +406,7 @@ number-of-cars
 number-of-cars
 1
 41
-21.0
+11.0
 1
 1
 NIL
@@ -361,14 +451,13 @@ Car speeds
 time
 speed
 0.0
-300.0
+5000.0
 0.0
-1.0
-true
+5.0
+false
 false
 "" ""
 PENS
-"sample car" 1.0 0 -2674135 true "" "plot [speed] of sample-car"
 "min speed" 1.0 0 -13345367 true "" "plot min [speed] of turtles"
 "max speed" 1.0 0 -10899396 true "" "plot max [speed] of turtles"
 
@@ -428,10 +517,10 @@ selected-actions
 NIL
 NIL
 0.0
-300.0
+5000.0
 0.0
 20.0
-true
+false
 false
 "set-plot-y-range 0 number-of-cars" ""
 PENS
@@ -504,7 +593,7 @@ learning-rate
 learning-rate
 0
 0.01
-0.001
+0.0035
 0.0001
 1
 NIL
@@ -559,10 +648,10 @@ fp-ticks?
 -1000
 
 MONITOR
-910
-90
-1072
-135
+730
+475
+892
+520
 Current Tick Emissions
 current-tick-emissions
 17
@@ -570,10 +659,10 @@ current-tick-emissions
 11
 
 MONITOR
-915
-160
-1032
-205
+730
+520
+847
+565
 Total Emissions
 total-emissions
 17
@@ -581,10 +670,10 @@ total-emissions
 11
 
 MONITOR
-900
-255
-1092
-300
+730
+565
+922
+610
 Average Emissions per tick
 total-emissions / (ticks + 1)
 17
@@ -592,18 +681,18 @@ total-emissions / (ticks + 1)
 11
 
 PLOT
-1155
-40
-1640
-360
+705
+15
+1260
+405
 Emissions Over Time
 Time(ticks)
 Emissions
 0.0
-1.0
+5000.0
 0.0
-1.0
-true
+5.0
+false
 false
 "" ""
 PENS
